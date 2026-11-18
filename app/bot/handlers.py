@@ -305,6 +305,25 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📦 Use /apps <account-label> to list an account's apps.")
     elif query.data == "envhelp":
         await query.edit_message_text("🔐 ENV commands:\n/env <account> <app>\n/setenv <account> <app> <KEY>\n/delenv <account> <app> <KEY>\nValues are hidden and app-specific.")
+    elif query.data == "delenv_cancel":
+        context.user_data.pop("pending_delete_env", None)
+        await query.edit_message_text("ENV deletion cancelled.")
+    elif query.data == "delenv_confirm":
+        pending = context.user_data.pop("pending_delete_env", None)
+        if not pending:
+            await query.edit_message_text("No pending ENV deletion.")
+            return
+        label, app_name, key = pending
+        client = None
+        try:
+            client = await get_client(context, label)
+            await client.delete_config_var(app_name, key)
+            await query.edit_message_text(f"✅ {key} removed from {app_name}.")
+        except (ValueError, HerokuAPIError) as exc:
+            await query.edit_message_text(str(exc))
+        finally:
+            if client:
+                await client.close()
     else:
         await query.edit_message_text("Use /help to see all commands.", reply_markup=menu_keyboard())
 
