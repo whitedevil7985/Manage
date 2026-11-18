@@ -182,6 +182,9 @@ async def env_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.effective_message.reply_text("Usage: /env <account-label> <app-name>")
         return
+    if not LABEL_RE.fullmatch(context.args[0]) or not LABEL_RE.fullmatch(context.args[1]):
+        await update.effective_message.reply_text("Invalid account or app name.")
+        return
     client = None
     try:
         client = await get_client(context, context.args[0])
@@ -278,6 +281,9 @@ async def restart_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if len(context.args) != 2:
         await update.effective_message.reply_text("Usage: /restart <account-label> <app-name>")
+        return
+    if not LABEL_RE.fullmatch(context.args[0]) or not LABEL_RE.fullmatch(context.args[1]):
+        await update.effective_message.reply_text("Invalid account or app name.")
         return
     client = None
     try:
