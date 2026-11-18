@@ -11,6 +11,8 @@ Manage is an owner-only Telegram bot for controlling multiple Heroku accounts an
 - List apps separately for each connected account.
 - View app Config Var names without revealing their values.
 - Add/update Config Vars through a private prompt; the submitted value is not echoed and the bot attempts to delete the incoming message.
+- Bulk import up to 100 Config Vars from a UTF-8 .env file (64 KB maximum), after explicit confirmation.
+- Copy Config Vars between apps/accounts, after explicit confirmation.
 - Delete a Config Var only after an inline confirmation.
 - Request an app restart.
 - Owner-only commands and private-chat restriction.
@@ -27,6 +29,8 @@ Manage is an owner-only Telegram bot for controlling multiple Heroku accounts an
 | `/apps <label>` | List apps in an account |
 | `/env <label> <app>` | List Config Var names; values stay hidden |
 | `/setenv <label> <app> <KEY>` | Add/update a Config Var via a follow-up private message |
+| `/importenv <label> <app>` | Upload a .env file and import its keys after confirmation |
+| `/copyenv <source-account> <source-app> <target-account> <target-app>` | Copy ENV after confirmation |
 | `/delenv <label> <app> <KEY>` | Delete a Config Var after confirmation |
 | `/restart <label> <app>` | Restart app dynos |
 | `/cancel` | Cancel an active prompt |
@@ -79,7 +83,6 @@ The bot attempts to delete the message containing the API token or a new Config 
 
 ## Planned next phases
 
-- Bulk import from a `.env` file and explicit ENV copy between apps.
 - GitHub and ZIP deployment workflows.
 - Build, release, dyno, and live log views.
 - App create/delete controls with confirmation.
