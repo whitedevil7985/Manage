@@ -94,6 +94,11 @@ async def receive_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not token or token.startswith("/"):
         await update.effective_message.reply_text("Invalid token message. Try again or /cancel.")
         return WAITING_TOKEN
+    # Delete the credential message before making network/database calls.
+    try:
+        await update.effective_message.delete()
+    except Exception:
+        log.warning("Could not delete submitted token message; deletion is best-effort.")
     try:
         client = HerokuClient(token)
         try:
@@ -103,10 +108,6 @@ async def receive_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = context.user_data.pop("new_account_label")
         encrypted = context.application.bot_data["secret_box"].encrypt(token)
         await context.application.bot_data["db"].add_account(label, encrypted)
-        try:
-            await update.effective_message.delete()
-        except Exception:
-            log.warning("Could not delete submitted token message; deletion is best-effort.")
         await update.effective_chat.send_message(f"✅ Heroku account {label} connected.")
     except HerokuAPIError as exc:
         await update.effective_message.reply_text(str(exc))
@@ -229,15 +230,16 @@ async def receive_env_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if value is None or value.startswith("/"):
         await update.effective_message.reply_text("Invalid value. Start again with /setenv.")
         return ConversationHandler.END
+    # Delete the secret message before sending the value to Heroku.
+    try:
+        await update.effective_message.delete()
+    except Exception:
+        log.warning("Could not delete submitted ENV value message; deletion is best-effort.")
     label, app_name, key = pending
     client = None
     try:
         client = await get_client(context, label)
         await client.set_config_vars(app_name, {key: value})
-        try:
-            await update.effective_message.delete()
-        except Exception:
-            log.warning("Could not delete submitted ENV value message; deletion is best-effort.")
         await update.effective_chat.send_message(f"✅ {key} updated for {app_name}. Value hidden.")
     except (ValueError, HerokuAPIError) as exc:
         await update.effective_message.reply_text(str(exc))
