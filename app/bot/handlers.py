@@ -124,6 +124,9 @@ async def receive_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("new_account_label", None)
     context.user_data.pop("pending_env", None)
+    context.user_data.pop("pending_env_import_target", None)
+    context.user_data.pop("pending_env_change", None)
+    context.user_data.pop("pending_delete_env", None)
     await update.effective_message.reply_text("Cancelled.")
     return ConversationHandler.END
 
