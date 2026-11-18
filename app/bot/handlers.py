@@ -182,6 +182,41 @@ async def apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.close()
 
 
+async def app_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update, context):
+        return
+    if len(context.args) != 2:
+        await update.effective_message.reply_text("Usage: /status <account-label> <app-name>")
+        return
+    label, app_name = context.args
+    if not LABEL_RE.fullmatch(label) or not LABEL_RE.fullmatch(app_name):
+        await update.effective_message.reply_text("Invalid account or app name.")
+        return
+    client = None
+    try:
+        client = await get_client(context, label)
+        app = await client.get_app(app_name)
+        dynos = await client.list_dynos(app_name)
+        lines = [
+            f"App: {app.get('name', app_name)}",
+            f"State: {app.get('state', 'unknown')}",
+            f"Region: {(app.get('region') or {}).get('name', 'unknown')}",
+            f"Maintenance: {'ON' if app.get('maintenance') else 'OFF'}",
+            f"Dynos: {len(dynos)}",
+        ]
+        for dyno in dynos[:15]:
+            lines.append(
+                f"• {dyno.get('type', 'process')} — {dyno.get('state', 'unknown')} "
+                f"({dyno.get('size', 'unknown')})"
+            )
+        await update.effective_message.reply_text("\\n".join(lines))
+    except (ValueError, HerokuAPIError) as exc:
+        await update.effective_message.reply_text(str(exc))
+    finally:
+        if client:
+            await client.close()
+
+
 async def env_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update, context):
         return
@@ -495,6 +530,7 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("accounts", accounts))
     application.add_handler(CommandHandler("removeaccount", remove_account))
     application.add_handler(CommandHandler("apps", apps))
+    application.add_handler(CommandHandler("status", app_status))
     application.add_handler(CommandHandler("env", env_command))
     application.add_handler(CommandHandler("delenv", delete_env))
     application.add_handler(CommandHandler("copyenv", copy_env))
