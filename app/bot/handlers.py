@@ -1,6 +1,8 @@
 import logging
 import re
+from io import StringIO
 
+from dotenv import dotenv_values
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.ext import (
@@ -13,6 +15,7 @@ from app.heroku.client import HerokuAPIError, HerokuClient
 log = logging.getLogger(__name__)
 WAITING_TOKEN = 1
 WAITING_ENV_VALUE = 2
+WAITING_ENV_FILE = 3
 LABEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}$")
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -276,6 +279,115 @@ async def delete_env(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def importenv_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update, context):
+        return ConversationHandler.END
+    if len(context.args) != 2:
+        await update.effective_message.reply_text("Usage: /importenv <account-label> <app-name>")
+        return ConversationHandler.END
+    label, app_name = context.args
+    if not LABEL_RE.fullmatch(label) or not LABEL_RE.fullmatch(app_name):
+        await update.effective_message.reply_text("Invalid account or app name.")
+        return ConversationHandler.END
+    context.user_data["pending_env_import_target"] = (label, app_name)
+    await update.effective_message.reply_text(
+        "Now upload a .env file (maximum 64 KB). Its values will not be shown. "
+        "The bot will attempt to delete the uploaded message. Send /cancel to stop."
+    )
+    return WAITING_ENV_FILE
+
+
+async def receive_env_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update, context):
+        return ConversationHandler.END
+    document = update.effective_message.document
+    target = context.user_data.pop("pending_env_import_target", None)
+    if not target:
+        await update.effective_message.reply_text("No pending ENV import. Start with /importenv.")
+        return ConversationHandler.END
+    if not document or not (document.file_name or "").lower().endswith(".env"):
+        await update.effective_message.reply_text("Please upload a file named .env.")
+        return ConversationHandler.END
+    if document.file_size and document.file_size > 65536:
+        await update.effective_message.reply_text("The .env file must be 64 KB or smaller.")
+        return ConversationHandler.END
+    try:
+        remote_file = await context.bot.get_file(document.file_id)
+        raw = await remote_file.download_as_bytearray()
+        try:
+            await update.effective_message.delete()
+        except Exception:
+            log.warning("Could not delete uploaded ENV file message; deletion is best-effort.")
+        parsed = dotenv_values(stream=StringIO(bytes(raw).decode("utf-8")), interpolate=False)
+        values = {
+            key: value for key, value in parsed.items()
+            if value is not None and KEY_RE.fullmatch(key)
+        }
+        if not values:
+            await update.effective_chat.send_message("No valid KEY=value entries were found in that file.")
+            return ConversationHandler.END
+        if len(values) > 100:
+            await update.effective_chat.send_message("The import is limited to 100 variables per operation.")
+            return ConversationHandler.END
+        label, app_name = target
+        context.user_data["pending_env_change"] = (label, app_name, values)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Confirm import", callback_data="envchange_confirm"),
+            InlineKeyboardButton("Cancel", callback_data="envchange_cancel"),
+        ]])
+        await update.effective_chat.send_message(
+            f"Import {len(values)} ENV variables into {app_name}? Existing keys with the same names will be overwritten. Values remain hidden.",
+            reply_markup=keyboard,
+        )
+    except UnicodeDecodeError:
+        await update.effective_chat.send_message("The .env file must use UTF-8 encoding.")
+    except Exception:
+        log.exception("ENV file import preparation failed")
+        await update.effective_chat.send_message("Could not read that .env file.")
+    return ConversationHandler.END
+
+
+async def copy_env(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update, context):
+        return
+    if len(context.args) != 4:
+        await update.effective_message.reply_text(
+            "Usage: /copyenv <source-account> <source-app> <target-account> <target-app>"
+        )
+        return
+    source_label, source_app, target_label, target_app = context.args
+    if not all(LABEL_RE.fullmatch(item) for item in (source_label, source_app, target_label, target_app)):
+        await update.effective_message.reply_text("Invalid account or app name.")
+        return
+    source = target = None
+    try:
+        source = await get_client(context, source_label)
+        values = await source.get_config_vars(source_app)
+        if not values:
+            await update.effective_message.reply_text("The source app has no Config Vars.")
+            return
+        if len(values) > 100:
+            await update.effective_message.reply_text("Copy is limited to 100 variables per operation.")
+            return
+        context.user_data["pending_env_change"] = (target_label, target_app, values)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Confirm copy", callback_data="envchange_confirm"),
+            InlineKeyboardButton("Cancel", callback_data="envchange_cancel"),
+        ]])
+        await update.effective_message.reply_text(
+            f"Copy {len(values)} ENV variables from {source_app} to {target_app}? "
+            "Existing target keys with the same names will be overwritten. Values remain hidden.",
+            reply_markup=keyboard,
+        )
+    except (ValueError, HerokuAPIError) as exc:
+        await update.effective_message.reply_text(str(exc))
+    finally:
+        if source:
+            await source.close()
+        if target:
+            await target.close()
+
+
 async def restart_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update, context):
         return
@@ -330,6 +442,25 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             if client:
                 await client.close()
+    elif query.data == "envchange_cancel":
+        context.user_data.pop("pending_env_change", None)
+        await query.edit_message_text("ENV operation cancelled.")
+    elif query.data == "envchange_confirm":
+        pending = context.user_data.pop("pending_env_change", None)
+        if not pending:
+            await query.edit_message_text("No pending ENV operation.")
+            return
+        label, app_name, values = pending
+        client = None
+        try:
+            client = await get_client(context, label)
+            await client.set_config_vars(app_name, values)
+            await query.edit_message_text(f"✅ Applied {len(values)} ENV variables to {app_name}. Values hidden.")
+        except (ValueError, HerokuAPIError) as exc:
+            await query.edit_message_text(str(exc))
+        finally:
+            if client:
+                await client.close()
     else:
         await query.edit_message_text("Use /help to see all commands.", reply_markup=menu_keyboard())
 
@@ -347,14 +478,22 @@ def register_handlers(application: Application):
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
+    import_conv = ConversationHandler(
+        entry_points=[CommandHandler("importenv", importenv_start)],
+        states={WAITING_ENV_FILE: [MessageHandler(filters.Document.ALL, receive_env_file)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(account_conv)
     application.add_handler(env_conv)
+    application.add_handler(import_conv)
     application.add_handler(CommandHandler("accounts", accounts))
     application.add_handler(CommandHandler("removeaccount", remove_account))
     application.add_handler(CommandHandler("apps", apps))
     application.add_handler(CommandHandler("env", env_command))
     application.add_handler(CommandHandler("delenv", delete_env))
+    application.add_handler(CommandHandler("copyenv", copy_env))
     application.add_handler(CommandHandler("restart", restart_app))
     application.add_handler(CallbackQueryHandler(callbacks))
