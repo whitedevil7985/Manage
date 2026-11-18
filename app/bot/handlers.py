@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 WAITING_TOKEN = 1
 WAITING_ENV_VALUE = 2
 WAITING_ENV_FILE = 3
+WAITING_BULK_ENV_TEXT = 4
 LABEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}$")
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -65,6 +66,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/apps <label> — list apps in an account\n"
         "/env <label> <app> — show ENV keys (values hidden)\n"
         "/setenv <label> <app> <KEY> — set a variable by private prompt\n"
+        "/bulksetenv <label> <app> — paste many KEY=VALUE lines at once\n"
         "/delenv <label> <app> <KEY> — delete a variable\n"
         "/restart <label> <app> — restart an app\n\n"
         "Use this bot in a private chat only. Never share credentials."
@@ -125,6 +127,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("new_account_label", None)
     context.user_data.pop("pending_env", None)
     context.user_data.pop("pending_env_import_target", None)
+    context.user_data.pop("pending_bulk_env_target", None)
     context.user_data.pop("pending_env_change", None)
     context.user_data.pop("pending_delete_env", None)
     await update.effective_message.reply_text("Cancelled.")
@@ -385,6 +388,70 @@ async def receive_env_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def bulksetenv_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update, context):
+        return ConversationHandler.END
+    if len(context.args) != 2:
+        await update.effective_message.reply_text("Usage: /bulksetenv <account-label> <app-name>")
+        return ConversationHandler.END
+    label, app_name = context.args
+    if not LABEL_RE.fullmatch(label) or not LABEL_RE.fullmatch(app_name):
+        await update.effective_message.reply_text("Invalid account or app name.")
+        return ConversationHandler.END
+    context.user_data["pending_bulk_env_target"] = (label, app_name)
+    await update.effective_message.reply_text(
+        "Paste all ENV variables in ONE message, one KEY=VALUE per line.\n"
+        "Maximum 3,500 characters and 100 variables. Values will stay hidden.\n"
+        "Example:\nAPI_ID=12345\nAPI_HASH=your_hash\nBOT_TOKEN=your_token\n"
+        "The message will be deleted on a best-effort basis. Send /cancel to stop."
+    )
+    return WAITING_BULK_ENV_TEXT
+
+
+async def receive_bulk_env_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update, context):
+        return ConversationHandler.END
+    target = context.user_data.pop("pending_bulk_env_target", None)
+    message = update.effective_message
+    raw_text = message.text or ""
+    try:
+        await message.delete()
+    except Exception:
+        log.warning("Could not delete pasted bulk ENV message; deletion is best-effort.")
+    if not target:
+        await update.effective_chat.send_message("No pending bulk ENV operation. Start with /bulksetenv.")
+        return ConversationHandler.END
+    if not raw_text or len(raw_text) > 3500:
+        await update.effective_chat.send_message("Paste a non-empty ENV block up to 3,500 characters.")
+        return ConversationHandler.END
+    try:
+        parsed = dotenv_values(stream=StringIO(raw_text), interpolate=False)
+        values = {
+            key: value for key, value in parsed.items()
+            if value is not None and KEY_RE.fullmatch(key)
+        }
+        if not values:
+            await update.effective_chat.send_message("No valid KEY=VALUE entries found. Start again with /bulksetenv.")
+            return ConversationHandler.END
+        if len(values) > 100:
+            await update.effective_chat.send_message("Bulk update is limited to 100 variables. Start again with /bulksetenv.")
+            return ConversationHandler.END
+        label, app_name = target
+        context.user_data["pending_env_change"] = (label, app_name, values)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Confirm update", callback_data="envchange_confirm"),
+            InlineKeyboardButton("Cancel", callback_data="envchange_cancel"),
+        ]])
+        await update.effective_chat.send_message(
+            f"Apply {len(values)} ENV variables to {app_name}? Existing keys with the same names will be overwritten. Values will not be displayed.",
+            reply_markup=keyboard,
+        )
+    except Exception:
+        log.exception("Bulk ENV text parsing failed")
+        await update.effective_chat.send_message("Could not parse that ENV block. Check KEY=VALUE format and try again.")
+    return ConversationHandler.END
+
+
 async def copy_env(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update, context):
         return
@@ -516,6 +583,12 @@ def register_handlers(application: Application):
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
+    bulk_env_conv = ConversationHandler(
+        entry_points=[CommandHandler("bulksetenv", bulksetenv_start)],
+        states={WAITING_BULK_ENV_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bulk_env_text)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
     import_conv = ConversationHandler(
         entry_points=[CommandHandler("importenv", importenv_start)],
         states={WAITING_ENV_FILE: [MessageHandler(filters.Document.ALL, receive_env_file)]},
@@ -527,6 +600,7 @@ def register_handlers(application: Application):
     application.add_handler(account_conv)
     application.add_handler(env_conv)
     application.add_handler(import_conv)
+    application.add_handler(bulk_env_conv)
     application.add_handler(CommandHandler("accounts", accounts))
     application.add_handler(CommandHandler("removeaccount", remove_account))
     application.add_handler(CommandHandler("apps", apps))
