@@ -9,6 +9,7 @@ Manage is an owner-only Telegram bot for controlling multiple Heroku accounts an
 - Store API tokens encrypted with Fernet in PostgreSQL.
 - List and remove connected accounts.
 - List apps separately for each connected account.
+- View app state, region, maintenance mode, and dyno state/size.
 - View app Config Var names without revealing their values.
 - Add/update Config Vars through a private prompt; the submitted value is not echoed and the bot attempts to delete the incoming message.
 - Bulk import up to 100 Config Vars from a UTF-8 .env file (64 KB maximum), after explicit confirmation.
@@ -27,6 +28,7 @@ Manage is an owner-only Telegram bot for controlling multiple Heroku accounts an
 | `/accounts` | List connected accounts |
 | `/removeaccount <label>` | Remove a saved account token |
 | `/apps <label>` | List apps in an account |
+| `/status <label> <app>` | Show app and dyno status |
 | `/env <label> <app>` | List Config Var names; values stay hidden |
 | `/setenv <label> <app> <KEY>` | Add/update a Config Var via a follow-up private message |
 | `/importenv <label> <app>` | Upload a .env file and import its keys after confirmation |
