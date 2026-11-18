@@ -259,16 +259,18 @@ async def delete_env(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not KEY_RE.fullmatch(key):
         await update.effective_message.reply_text("Invalid ENV key.")
         return
-    client = None
-    try:
-        client = await get_client(context, label)
-        await client.delete_config_var(app_name, key)
-        await update.effective_message.reply_text(f"✅ {key} removed from {app_name}.")
-    except (ValueError, HerokuAPIError) as exc:
-        await update.effective_message.reply_text(str(exc))
-    finally:
-        if client:
-            await client.close()
+    if not LABEL_RE.fullmatch(label) or not LABEL_RE.fullmatch(app_name):
+        await update.effective_message.reply_text("Invalid account or app name.")
+        return
+    context.user_data["pending_delete_env"] = (label, app_name, key)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Confirm delete", callback_data="delenv_confirm"),
+        InlineKeyboardButton("Cancel", callback_data="delenv_cancel"),
+    ]])
+    await update.effective_message.reply_text(
+        f"⚠️ Delete ENV key {key} from {app_name}? This cannot be undone.",
+        reply_markup=keyboard,
+    )
 
 
 async def restart_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
