@@ -45,6 +45,12 @@ class HerokuClient:
     async def list_apps(self):
         return await self._request("GET", "/apps", params={"sort": "name"})
 
+    async def get_app(self, app_name: str):
+        return await self._request("GET", f"/apps/{app_name}")
+
+    async def list_dynos(self, app_name: str):
+        return await self._request("GET", f"/apps/{app_name}/dynos")
+
     async def get_config_vars(self, app_name: str):
         return await self._request("GET", f"/apps/{app_name}/config-vars")
 
