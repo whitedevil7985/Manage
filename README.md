@@ -1,47 +1,88 @@
 # Manage — Heroku Management Bot
 
-A private, owner-controlled Telegram bot for managing multiple Heroku accounts and multiple Heroku apps from one interface.
+Manage is an owner-only Telegram bot for controlling multiple Heroku accounts and the apps inside each account.
 
-## Planned features
+## Implemented in the current MVP
 
-- Connect and manage multiple Heroku accounts.
-- List apps separately under each connected account.
-- App-specific Config Vars (ENV): view names, add, update, delete, and bulk upload from a `.env` file.
-- Explicit, user-triggered ENV copy between apps; no automatic sharing.
-- Deploy apps from GitHub repositories or ZIP uploads.
-- Restart apps and inspect app status, dynos, builds, and logs.
-- Telegram control panel with owner-only access.
+- Connect multiple Heroku accounts using their API tokens.
+- Validate each token against the Heroku API before saving it.
+- Store API tokens encrypted with Fernet in PostgreSQL.
+- List and remove connected accounts.
+- List apps separately for each connected account.
+- View app Config Var names without revealing their values.
+- Add/update Config Vars through a private prompt; the submitted value is not echoed and the bot attempts to delete the incoming message.
+- Delete a Config Var only after an inline confirmation.
+- Request an app restart.
+- Owner-only commands and private-chat restriction.
 
-## Security principles
+## Commands
 
-- Never commit Heroku API keys, Telegram bot tokens, database credentials, or real `.env` files.
-- Store credentials encrypted at rest.
-- Redact secret values from logs and Telegram responses.
-- Require confirmation for destructive actions such as deleting an app or removing config vars.
-- Use least-privilege access wherever the Heroku platform permits it.
+| Command | Purpose |
+|---|---|
+| `/start` | Open the control panel |
+| `/help` | Show commands |
+| `/addaccount <label>` | Connect a Heroku account |
+| `/accounts` | List connected accounts |
+| `/removeaccount <label>` | Remove a saved account token |
+| `/apps <label>` | List apps in an account |
+| `/env <label> <app>` | List Config Var names; values stay hidden |
+| `/setenv <label> <app> <KEY>` | Add/update a Config Var via a follow-up private message |
+| `/delenv <label> <app> <KEY>` | Delete a Config Var after confirmation |
+| `/restart <label> <app>` | Restart app dynos |
+| `/cancel` | Cancel an active prompt |
 
-## Initial architecture
+Account labels should contain letters, digits, dots, underscores, or hyphens. Example: `/addaccount primary`.
 
-```text
-Manage/
-├── app/
-│   ├── bot/          # Telegram handlers and control panel
-│   ├── heroku/       # Heroku API client and account/app operations
-│   ├── services/     # ENV, deployment, monitoring workflows
-│   ├── storage/      # Persistent account and app metadata
-│   └── security/     # Authorization, encryption, secret redaction
-├── tests/
-├── .env.example      # Names/placeholders only; never real secrets
-├── .gitignore
-├── Procfile
-├── requirements.txt
-└── README.md
-```
+## Deploy on Heroku
 
-## Configuration
+1. Create a Telegram bot with BotFather and copy its token.
+2. Create a Heroku app for this manager.
+3. Attach a Heroku Postgres database to the manager app (or provide a reachable PostgreSQL URL).
+4. Set these Config Vars on the manager app:
+   - `BOT_TOKEN`: Telegram bot token.
+   - `OWNER_ID`: your numeric Telegram user ID.
+   - `DATABASE_URL`: PostgreSQL connection URL.
+   - `ENCRYPTION_KEY`: Fernet key generated with:
 
-Runtime configuration will be documented in `.env.example` when the implementation is added. Put actual secrets only in the hosting platform's Config Vars, never in Git.
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
 
-## Status
+5. Deploy this repository and scale the worker to one instance:
 
-Repository initialized with the project scope and security requirements. Implementation and automated tests are the next steps.
+   ```bash
+   heroku ps:scale worker=1 -a YOUR_MANAGER_APP
+   ```
+
+6. Open the bot in Telegram and send `/start`.
+
+Keep `ENCRYPTION_KEY` backed up and stable. If it is lost or changed, saved Heroku account tokens cannot be decrypted. Never commit real tokens, database URLs, or `.env` files.
+
+## Connect Heroku accounts
+
+In the bot's private chat:
+
+1. Send `/addaccount primary`.
+2. Send the API token for that Heroku account when prompted.
+3. The bot validates the token and encrypts it before storing it.
+4. Repeat with another unique label for each Heroku account.
+
+The bot attempts to delete the message containing the API token or a new Config Var value. Telegram deletion is best-effort; if deletion fails, the secret may remain visible in chat history. Use a private chat and rotate any credential that may have been exposed.
+
+## Security notes
+
+- Only the configured `OWNER_ID` can operate the bot, and only in a private chat.
+- Heroku API tokens are encrypted at rest. The encryption key is supplied separately through manager app Config Vars.
+- Config Var values are never returned by the ENV listing command.
+- Do not enable debug logging around secrets or paste credentials into support chats.
+- Removing a connected account only removes its encrypted token from this manager; it does not delete the Heroku account or its apps.
+
+## Planned next phases
+
+- Bulk import from a `.env` file and explicit ENV copy between apps.
+- GitHub and ZIP deployment workflows.
+- Build, release, dyno, and live log views.
+- App create/delete controls with confirmation.
+- Account/app browser buttons and richer status dashboard.
+
+These planned features are not implemented yet.
